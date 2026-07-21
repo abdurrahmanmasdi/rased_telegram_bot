@@ -2,6 +2,7 @@ import { Injectable, Inject, OnApplicationBootstrap, OnApplicationShutdown, Logg
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { WebSocket, RawData } from 'ws';
 import { Redis } from 'ioredis';
+import { Binance24hTickerPayload } from '../engine/interfaces/binance-ticker.interface';
 
 @Injectable()
 export class IngestionWebSocketService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -57,13 +58,13 @@ export class IngestionWebSocketService implements OnApplicationBootstrap, OnAppl
 
     ws.on('message', (data: RawData) => {
       try {
-        const payload = JSON.parse(data.toString());
+        const payload = JSON.parse(data.toString()) as { stream: string, data: Binance24hTickerPayload };
         // Clean payload from combined stream: { stream: '...', data: { ... } }
         if (payload && payload.data) {
           // 3. Emit internal event completely unblocked - no database hits, no heavy lifting
           this.eventEmitter.emit('market.ticker', payload.data);
         }
-      } catch (err) {
+      } catch (err: unknown) {
         // ignore parse errors to keep the stream unblocked
       }
     });

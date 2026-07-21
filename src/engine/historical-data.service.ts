@@ -38,7 +38,7 @@ export class HistoricalDataService implements OnApplicationBootstrap {
           continue;
         }
 
-        const klines: any[][] = await response.json();
+        const klines = await response.json() as (string | number)[][];
 
         if (klines.length < 14) {
           this.logger.warn(`Not enough data to calculate baselines for ${ticker} (Got ${klines.length} days)`);
@@ -46,7 +46,7 @@ export class HistoricalDataService implements OnApplicationBootstrap {
         }
 
         // Calculate 30-day Average Quote Volume
-        const totalQuoteVolume = klines.reduce((sum, k) => sum + parseFloat(k[7]), 0);
+        const totalQuoteVolume = klines.reduce((sum, k) => sum + parseFloat(k[7] as string), 0);
         const avgVolume30d = totalQuoteVolume / klines.length;
 
         // Calculate 14-day ATR (Average True Range)
@@ -55,9 +55,9 @@ export class HistoricalDataService implements OnApplicationBootstrap {
         
         // Start from index 1 because we need a previous close
         for (let i = 1; i < klines.length; i++) {
-          const high = parseFloat(klines[i][2]);
-          const low = parseFloat(klines[i][3]);
-          const prevClose = parseFloat(klines[i - 1][4]);
+          const high = parseFloat(klines[i][2] as string);
+          const low = parseFloat(klines[i][3] as string);
+          const prevClose = parseFloat(klines[i - 1][4] as string);
 
           const tr = Math.max(
             high - low,
@@ -81,8 +81,12 @@ export class HistoricalDataService implements OnApplicationBootstrap {
         });
 
         this.logger.log(`Updated baseline for ${ticker}: AvgVol30d=${avgVolume30d.toFixed(2)}, ATR14d=${atr14d.toFixed(4)}`);
-      } catch (error: any) {
-        this.logger.error(`Error fetching historical data for ${ticker}: ${error.message}`);
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          this.logger.error(`Error fetching historical data for ${ticker}: ${error.message}`);
+        } else {
+          this.logger.error(`Unknown error fetching historical data for ${ticker}: ${String(error)}`);
+        }
       }
     }
   }

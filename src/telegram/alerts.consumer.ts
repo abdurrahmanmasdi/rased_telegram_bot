@@ -5,23 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AlertLog, Exchange } from '../database/entities/alert-log.entity';
 
-interface AlertJobPayload {
-  ticker: string;
-  exchange: string;
-  triggerReason: string;
-  metricsSnapshot: {
-    quoteVolume: number;
-    priceChangePercent: number;
-    lastPrice: number;
-    vwap: number;
-    rvol?: number;
-    atrPercent?: number;
-  };
-  entryPrice: number;
-  stopLoss: number;
-  targets: number[];
-  timestamp: string;
-}
+import { AlertJobPayload } from '../engine/interfaces/alert-job.interface';
 
 @Processor('telegram-alerts')
 export class AlertsConsumer extends WorkerHost {
@@ -34,7 +18,7 @@ export class AlertsConsumer extends WorkerHost {
     super();
   }
 
-  async process(job: Job<AlertJobPayload>): Promise<any> {
+  async process(job: Job<AlertJobPayload>): Promise<void> {
     if (job.name !== 'sendAlert') return;
 
     this.logger.log(`Processing alert job ${job.id || 'unknown'} for ${job.data.ticker}`);
@@ -80,7 +64,7 @@ ${tradeSetupStr}
     `.trim();
 
     const url = `https://api.telegram.org/bot${token}/sendMessage`;
-    const body: any = {
+    const body: Record<string, unknown> = {
       chat_id: chatId,
       text: message,
       parse_mode: 'HTML',
@@ -100,7 +84,7 @@ ${tradeSetupStr}
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
+        const errorData = await response.json().catch(() => ({})) as Record<string, any>;
         
         // Handle Rate Limiting explicitly
         if (response.status === 429) {
@@ -127,11 +111,19 @@ ${tradeSetupStr}
         });
         await this.alertLogRepository.save(logEntry);
         this.logger.log(`Alert for ${payload.ticker} saved to database.`);
-      } catch (dbError: any) {
-        this.logger.error(`Failed to save alert log to database for ${payload.ticker}: ${dbError.message}`);
+      } catch (dbError: unknown) {
+        if (dbError instanceof Error) {
+          this.logger.error(`Failed to save alert log to database for ${payload.ticker}: ${dbError.message}`);
+        } else {
+          this.logger.error(`Failed to save alert log to database for ${payload.ticker}: ${String(dbError)}`);
+        }
       }
-    } catch (error: any) {
-      this.logger.error(`Error sending message to Telegram: ${error.message}`);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        this.logger.error(`Error sending message to Telegram: ${error.message}`);
+      } else {
+        this.logger.error(`Error sending message to Telegram: ${String(error)}`);
+      }
       throw error; // Rethrow to let BullMQ handle the failure/retry
     }
   }

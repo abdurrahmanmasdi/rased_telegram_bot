@@ -4,6 +4,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import { FilterConfigService, GlobalFilters } from './filter-config.service';
+import type { Binance24hTickerPayload } from './interfaces/binance-ticker.interface';
 
 @Injectable()
 export class EngineService {
@@ -16,7 +17,7 @@ export class EngineService {
   ) {}
 
   @OnEvent('market.ticker', { async: true })
-  async handleMarketTicker(payload: any) {
+  async handleMarketTicker(payload: Binance24hTickerPayload) {
     try {
       if (!payload || !payload.s) return;
 
@@ -98,8 +99,12 @@ export class EngineService {
         removeOnFail: 100, // Keep last 100 failed jobs for debugging
       });
 
-    } catch (error: any) {
-      this.logger.error(`Error processing market.ticker for ${payload?.s || 'unknown'}: ${error.message}`, error.stack);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        this.logger.error(`Error processing market.ticker for ${payload?.s || 'unknown'}: ${error.message}`, error.stack);
+      } else {
+        this.logger.error(`Unknown error processing market.ticker for ${payload?.s || 'unknown'}: ${String(error)}`);
+      }
     }
   }
 
