@@ -1,0 +1,101 @@
+import { Injectable, Inject, Logger } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+import { Redis } from 'ioredis';
+import { FilterConfigService, GlobalFilters } from './filter-config.service';
+
+@Injectable()
+export class EngineService {
+  private readonly logger = new Logger(EngineService.name);
+
+  constructor(
+    @Inject('REDIS_CLIENT') private readonly redisClient: Redis,
+    @InjectQueue('telegram-alerts') private readonly alertsQueue: Queue,
+    private readonly filterConfigService: FilterConfigService,
+  ) {}
+
+  @OnEvent('market.ticker', { async: true })
+  async handleMarketTicker(payload: any) {
+    try {
+      if (!payload || !payload.s) return;
+
+      const ticker = payload.s; // Symbol (e.g. BTCUSDT)
+      const quoteVolume = parseFloat(payload.q); // 24h quote volume
+      const priceChangePercent = parseFloat(payload.P); // 24h price change percent
+      const lastPrice = parseFloat(payload.c); // Last price
+
+      // Fetch dynamic filters and baselines from Redis
+      const filters = await this.filterConfigService.getFilters();
+      const rawBaseline = await this.redisClient.hgetall(`baseline:${ticker}`);
+      
+      let rvol = 0;
+      let atrPercent = 0;
+
+      if (rawBaseline.avgVolume30d && rawBaseline.atr14d) {
+        const avgVol = parseFloat(rawBaseline.avgVolume30d);
+        const atr14d = parseFloat(rawBaseline.atr14d);
+
+        if (avgVol > 0) rvol = quoteVolume / avgVol;
+        if (lastPrice > 0) atrPercent = (atr14d / lastPrice) * 100;
+      }
+
+      // 1. Evaluate MVP Filter Logic
+      const passed = this.evaluateStructuralFilters(quoteVolume, priceChangePercent, rvol, atrPercent, filters);
+      if (!passed) {
+        return;
+      }
+
+      // 2. Cooldown Mechanism
+      // Atomic set: set key to '1' with an Expiration of 900 seconds, Only if Not eXists
+      const cooldownKey = `cooldown:${ticker}`;
+      const result = await this.redisClient.set(cooldownKey, '1', 'EX', 900, 'NX');
+      
+      if (result !== 'OK') {
+        // Key already exists, drop alert (in cooldown)
+        return;
+      }
+
+      // 3. Dispatch to Queue
+      this.logger.log(`[ALERT] Triggered for ${ticker}. Pushing to queue...`);
+      await this.alertsQueue.add('sendAlert', {
+        ticker,
+        exchange: 'binance',
+        triggerReason: `RVOL ${rvol.toFixed(2)}x > ${filters.minRvol}x | ATR ${atrPercent.toFixed(2)}% > ${filters.minAtrPercent}% | Vol > $${(filters.minQuoteVolume / 1000000).toFixed(1)}M`,
+        metricsSnapshot: {
+          quoteVolume,
+          priceChangePercent,
+          lastPrice,
+          rvol,
+          atrPercent
+        },
+        entryPrice: lastPrice,
+        timestamp: new Date().toISOString()
+      }, {
+        removeOnComplete: true,
+        removeOnFail: 100, // Keep last 100 failed jobs for debugging
+      });
+
+    } catch (error: any) {
+      this.logger.error(`Error processing market.ticker for ${payload?.s || 'unknown'}: ${error.message}`, error.stack);
+    }
+  }
+
+  /**
+   * MVP Filter Logic inside a private method so we can easily expand
+   * RVOL and ATR calculations later.
+   */
+  private evaluateStructuralFilters(quoteVolume: number, priceChangePercent: number, rvol: number, atrPercent: number, filters: GlobalFilters): boolean {
+    if (
+      quoteVolume > filters.minQuoteVolume && 
+      Math.abs(priceChangePercent) > filters.minPriceChangePercent &&
+      rvol >= filters.minRvol &&
+      atrPercent >= filters.minAtrPercent
+    ) {
+      return true;
+    }
+    return false;
+  }
+}
+
+
