@@ -1,6 +1,7 @@
-import { Injectable, OnApplicationBootstrap, OnApplicationShutdown, Logger } from '@nestjs/common';
+import { Injectable, Inject, OnApplicationBootstrap, OnApplicationShutdown, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { WebSocket, RawData } from 'ws';
+import { Redis } from 'ioredis';
 
 @Injectable()
 export class IngestionWebSocketService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -14,7 +15,10 @@ export class IngestionWebSocketService implements OnApplicationBootstrap, OnAppl
   private readonly baseDelay = 1000;
   private readonly maxDelay = 30000; // 30 seconds max
   
-  constructor(private eventEmitter: EventEmitter2) {}
+  constructor(
+    private eventEmitter: EventEmitter2,
+    @Inject('REDIS_CLIENT') private readonly redisClient: Redis,
+  ) {}
 
   onApplicationBootstrap() {
     this.connect();
@@ -24,12 +28,12 @@ export class IngestionWebSocketService implements OnApplicationBootstrap, OnAppl
     this.cleanup();
   }
 
-  private connect() {
+  private async connect() {
     this.cleanup();
     
-    // 1. Read tracked tickers from env or fallback to defaults
-    const rawTickers = process.env.TRACKED_TICKERS || 'BTCUSDT,ETHUSDT,SOLUSDT';
-    const tickers = rawTickers.split(',').map(t => t.trim().toLowerCase());
+    // 1. Read tracked tickers from Redis
+    const rawTickers = await this.redisClient.smembers('system:tracked_tickers');
+    const tickers = rawTickers.map(t => t.trim().toLowerCase());
     
     if (tickers.length === 0) {
       this.logger.warn('No tickers configured to track.');

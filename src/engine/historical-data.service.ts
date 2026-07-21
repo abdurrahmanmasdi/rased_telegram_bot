@@ -20,8 +20,13 @@ export class HistoricalDataService implements OnApplicationBootstrap {
   }
 
   public async refreshBaselines() {
-    const rawTickers = process.env.TRACKED_TICKERS || 'BTCUSDT,ETHUSDT,SOLUSDT';
-    const tickers = rawTickers.split(',').map(t => t.trim());
+    const rawTickers = await this.redisClient.smembers('system:tracked_tickers');
+    const tickers = rawTickers.map(t => t.trim());
+    
+    if (tickers.length === 0) {
+      this.logger.warn('No tickers found in Redis (system:tracked_tickers) to calculate baselines.');
+      return;
+    }
 
     for (const ticker of tickers) {
       try {

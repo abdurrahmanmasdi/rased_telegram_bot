@@ -13,10 +13,13 @@ interface AlertJobPayload {
     quoteVolume: number;
     priceChangePercent: number;
     lastPrice: number;
+    vwap: number;
     rvol?: number;
     atrPercent?: number;
   };
   entryPrice: number;
+  stopLoss: number;
+  targets: number[];
   timestamp: string;
 }
 
@@ -48,16 +51,31 @@ export class AlertsConsumer extends WorkerHost {
     const payload = job.data;
     
     // Formatting as HTML for cleaner bolding and spacing in Telegram
+    let tradeSetupStr = '';
+    const dec = payload.entryPrice < 1 ? 4 : (payload.entryPrice < 100 ? 3 : 2);
+    
+    if (payload.targets && payload.targets.length >= 3 && payload.stopLoss) {
+      tradeSetupStr = `
+🎯 <b>Trade Setup (Long)</b>
+<b>Entry:</b> $${payload.entryPrice.toFixed(dec)}
+<b>Stop Loss:</b> $${payload.stopLoss.toFixed(dec)}
+<b>Target 1:</b> $${payload.targets[0].toFixed(dec)}
+<b>Target 2:</b> $${payload.targets[1].toFixed(dec)}
+<b>Target 3:</b> $${payload.targets[2].toFixed(dec)}
+`;
+    }
+
     const message = `
 🚨 <b>MOMENTUM RADAR ALERT</b> 🚨
 
 <b>Ticker:</b> $${payload.ticker}
-<b>Price:</b> $${payload.entryPrice.toFixed(4)}
+<b>Price:</b> $${payload.entryPrice.toFixed(dec)}
+<b>VWAP:</b> $${payload.metricsSnapshot.vwap.toFixed(dec)}
 <b>24h Change:</b> ${payload.metricsSnapshot.priceChangePercent > 0 ? '+' : ''}${payload.metricsSnapshot.priceChangePercent.toFixed(2)}%
 <b>24h Volume:</b> $${(payload.metricsSnapshot.quoteVolume / 1000000).toFixed(2)}M
 <b>RVOL:</b> ${payload.metricsSnapshot.rvol ? payload.metricsSnapshot.rvol.toFixed(2) + 'x' : 'N/A'}
 <b>ATR (14d):</b> ${payload.metricsSnapshot.atrPercent ? payload.metricsSnapshot.atrPercent.toFixed(2) + '%' : 'N/A'}
-
+${tradeSetupStr}
 <i>Reason: ${payload.triggerReason}</i>
     `.trim();
 

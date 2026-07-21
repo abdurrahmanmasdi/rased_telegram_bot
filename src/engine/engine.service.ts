@@ -21,9 +21,13 @@ export class EngineService {
       if (!payload || !payload.s) return;
 
       const ticker = payload.s; // Symbol (e.g. BTCUSDT)
+      const isHaram = await this.redisClient.sismember('system:haram_tickers', ticker);
+      if (isHaram === 1) return; // ⛔️ Drop Non-Halal Tokens immediately
+
       const quoteVolume = parseFloat(payload.q); // 24h quote volume
       const priceChangePercent = parseFloat(payload.P); // 24h price change percent
       const lastPrice = parseFloat(payload.c); // Last price
+      const vwap = parseFloat(payload.w); // VWAP
 
       // Fetch dynamic filters and baselines from Redis
       const filters = await this.filterConfigService.getFilters();
@@ -41,9 +45,24 @@ export class EngineService {
       }
 
       // 1. Evaluate MVP Filter Logic
-      const passed = this.evaluateStructuralFilters(quoteVolume, priceChangePercent, rvol, atrPercent, filters);
+      const passed = this.evaluateStructuralFilters(quoteVolume, priceChangePercent, rvol, atrPercent, lastPrice, vwap, filters);
       if (!passed) {
         return;
+      }
+
+      // Calculate Trade Setup based on ATR
+      let stopLoss = 0;
+      let targets: number[] = [];
+      if (rawBaseline.atr14d) {
+        const atr14d = parseFloat(rawBaseline.atr14d);
+        if (atr14d > 0) {
+          stopLoss = lastPrice - (1.5 * atr14d);
+          targets = [
+            lastPrice + (1.0 * atr14d),
+            lastPrice + (2.0 * atr14d),
+            lastPrice + (3.0 * atr14d),
+          ];
+        }
       }
 
       // 2. Cooldown Mechanism
@@ -61,15 +80,18 @@ export class EngineService {
       await this.alertsQueue.add('sendAlert', {
         ticker,
         exchange: 'binance',
-        triggerReason: `RVOL ${rvol.toFixed(2)}x > ${filters.minRvol}x | ATR ${atrPercent.toFixed(2)}% > ${filters.minAtrPercent}% | Vol > $${(filters.minQuoteVolume / 1000000).toFixed(1)}M`,
+        triggerReason: `Price > VWAP | RVOL ${rvol.toFixed(2)}x > ${filters.minRvol}x | ATR ${atrPercent.toFixed(2)}% > ${filters.minAtrPercent}% | Vol > $${(filters.minQuoteVolume / 1000000).toFixed(1)}M`,
         metricsSnapshot: {
           quoteVolume,
           priceChangePercent,
           lastPrice,
+          vwap,
           rvol,
           atrPercent
         },
         entryPrice: lastPrice,
+        stopLoss,
+        targets,
         timestamp: new Date().toISOString()
       }, {
         removeOnComplete: true,
@@ -85,12 +107,13 @@ export class EngineService {
    * MVP Filter Logic inside a private method so we can easily expand
    * RVOL and ATR calculations later.
    */
-  private evaluateStructuralFilters(quoteVolume: number, priceChangePercent: number, rvol: number, atrPercent: number, filters: GlobalFilters): boolean {
+  private evaluateStructuralFilters(quoteVolume: number, priceChangePercent: number, rvol: number, atrPercent: number, lastPrice: number, vwap: number, filters: GlobalFilters): boolean {
     if (
       quoteVolume > filters.minQuoteVolume && 
       Math.abs(priceChangePercent) > filters.minPriceChangePercent &&
       rvol >= filters.minRvol &&
-      atrPercent >= filters.minAtrPercent
+      atrPercent >= filters.minAtrPercent &&
+      lastPrice > vwap
     ) {
       return true;
     }
