@@ -28,6 +28,8 @@ export class HistoricalDataService implements OnApplicationBootstrap {
       return;
     }
 
+    const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+
     for (const ticker of tickers) {
       try {
         let response: Response | null = null;
@@ -119,6 +121,9 @@ export class HistoricalDataService implements OnApplicationBootstrap {
         } else {
           this.logger.error(`Unknown error fetching historical data for ${ticker}: ${String(error)}`);
         }
+      } finally {
+        // Enforce 100ms throttle between API requests to prevent HTTP 429 bans
+        await delay(100);
       }
     }
   }

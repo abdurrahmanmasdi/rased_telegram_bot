@@ -7,7 +7,12 @@ import { AlertLog, Exchange } from '../database/entities/alert-log.entity';
 
 import { AlertJobPayload } from '../engine/interfaces/alert-job.interface';
 
-@Processor('telegram-alerts')
+@Processor('telegram-alerts', {
+  limiter: {
+    max: 1,
+    duration: 1000,
+  },
+})
 export class AlertsConsumer extends WorkerHost {
   private readonly logger = new Logger(AlertsConsumer.name);
 
