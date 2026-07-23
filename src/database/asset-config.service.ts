@@ -2,6 +2,7 @@ import { Injectable, Inject, OnApplicationBootstrap, Logger } from '@nestjs/comm
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Redis } from 'ioredis';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AssetConfig } from './entities/asset-config.entity';
 
 @Injectable()
@@ -12,51 +13,60 @@ export class AssetConfigService implements OnApplicationBootstrap {
     @InjectRepository(AssetConfig)
     private readonly assetConfigRepository: Repository<AssetConfig>,
     @Inject('REDIS_CLIENT') private readonly redisClient: Redis,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async onApplicationBootstrap() {
-    let count = await this.assetConfigRepository.count();
-    
-    if (count === 0) {
-      this.logger.log('Seeding default AssetConfigs...');
-      const defaultAssets = [
-        { ticker: 'BTCUSDT', isTracked: true, isHalal: true },
-        { ticker: 'ETHUSDT', isTracked: true, isHalal: true },
-        { ticker: 'SOLUSDT', isTracked: true, isHalal: true },
-        { ticker: 'AAVEUSDT', isTracked: true, isHalal: false },
-        { ticker: 'MKRUSDT', isTracked: true, isHalal: false },
-        { ticker: 'COMPUSDT', isTracked: true, isHalal: false },
-        { ticker: 'LDOUSDT', isTracked: true, isHalal: false },
-        { ticker: 'GMXUSDT', isTracked: true, isHalal: false },
-        { ticker: 'RLBUSDT', isTracked: true, isHalal: false },
-      ];
-      await this.assetConfigRepository.save(defaultAssets);
-    }
-    
     await this.syncToRedis();
   }
 
   async syncToRedis() {
-    this.logger.log('Syncing AssetConfigs to Redis...');
+    this.logger.log('Syncing AssetConfigs from PostgreSQL to Redis...');
     const assets = await this.assetConfigRepository.find();
     
     const trackedKey = 'system:tracked_tickers';
     const haramKey = 'system:haram_tickers';
+    const tierKey = 'system:asset_tiers';
     
     const multi = this.redisClient.multi();
     multi.del(trackedKey);
     multi.del(haramKey);
+    multi.del(tierKey);
     
-    for (const asset of assets) {
-      if (asset.isTracked) {
-        multi.sadd(trackedKey, asset.ticker);
-      }
-      if (!asset.isHalal) {
-        multi.sadd(haramKey, asset.ticker);
+    if (assets.length === 0) {
+      this.logger.warn('No AssetConfigs found in PostgreSQL. Redis lists will be empty.');
+    } else {
+      for (const asset of assets) {
+        if (asset.isTracked) {
+          multi.sadd(trackedKey, asset.ticker);
+        }
+        if (!asset.isHalal) {
+          multi.sadd(haramKey, asset.ticker);
+        }
+        multi.hset(tierKey, asset.ticker, asset.tier);
       }
     }
     
     await multi.exec();
-    this.logger.log('AssetConfigs synced to Redis successfully.');
+    this.logger.log(`AssetConfigs synced to Redis successfully. Tracked: ${assets.filter(a => a.isTracked).length}, Haram: ${assets.filter(a => !a.isHalal).length}`);
+  }
+
+  // Helper method to add or update an asset and sync to Redis
+  async updateAsset(ticker: string, updates: Partial<Omit<AssetConfig, 'id' | 'ticker'>>) {
+    let asset = await this.assetConfigRepository.findOne({ where: { ticker } });
+    if (!asset) {
+      asset = this.assetConfigRepository.create({ ticker, ...updates });
+    } else {
+      Object.assign(asset, updates);
+    }
+    await this.assetConfigRepository.save(asset);
+    
+    this.logger.log(`Asset ${ticker} updated in PostgreSQL. Triggering Redis sync...`);
+    await this.syncToRedis();
+    
+    // Notify the system that asset configurations have changed
+    this.eventEmitter.emit('asset.config.updated');
+    
+    return asset;
   }
 }

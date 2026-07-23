@@ -14,4 +14,7 @@ export class AssetConfig {
 
   @Column({ default: true })
   isHalal: boolean;
+
+  @Column({ default: 'MINOR' })
+  tier: string;
 }

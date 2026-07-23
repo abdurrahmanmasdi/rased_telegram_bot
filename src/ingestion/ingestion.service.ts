@@ -1,5 +1,5 @@
 import { Injectable, Inject, OnApplicationBootstrap, OnApplicationShutdown, Logger } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { WebSocket, RawData } from 'ws';
 import { Redis } from 'ioredis';
 import { Binance24hTickerPayload } from '../engine/interfaces/binance-ticker.interface';
@@ -29,40 +29,63 @@ export class IngestionWebSocketService implements OnApplicationBootstrap, OnAppl
     this.cleanup();
   }
 
-  private async connect() {
+  @OnEvent('asset.config.updated')
+  handleAssetConfigUpdated() {
+    this.logger.log('Asset configuration updated. Reconnecting WS to apply new subscriptions...');
+    this.retries = 0; // Reset retries so it reconnects immediately
+    this.cleanup();
+    this.connect();
+  }
+
+  private connect() {
     this.cleanup();
     
-    // 1. Read tracked tickers from Redis
-    const rawTickers = await this.redisClient.smembers('system:tracked_tickers');
-    const tickers = rawTickers.map(t => t.trim().toLowerCase());
-    
-    if (tickers.length === 0) {
-      this.logger.warn('No tickers configured to track.');
-      return;
-    }
-
-    // 2. Generate combined stream URL
-    const streams = tickers.map(t => `${t}@ticker`).join('/');
-    const url = `wss://stream.binance.com:9443/stream?streams=${streams}`;
-
+    // Connect to the base stream instead of packing URL with streams
+    const url = `wss://stream.binance.com:9443/ws`;
     this.logger.log(`Connecting to Binance WS: ${url}`);
     
     const ws = new WebSocket(url);
     this.ws = ws;
 
-    ws.on('open', () => {
-      this.logger.log('Connected to Binance combined stream.');
+    ws.on('open', async () => {
+      this.logger.log('Connected to Binance WS stream.');
       this.retries = 0; // reset retries on successful connection
       this.setupHeartbeat();
+      
+      // 1. Read tracked tickers from Redis
+      const rawTickers = await this.redisClient.smembers('system:tracked_tickers');
+      const tickers = rawTickers.map(t => `${t.trim().toLowerCase()}@ticker`);
+      
+      if (tickers.length === 0) {
+        this.logger.warn('No tickers configured to track.');
+        return;
+      }
+
+      this.logger.log(`Subscribing to ${tickers.length} tickers...`);
+      
+      // 2. Chunk into 50 parameters per frame
+      const chunkSize = 50;
+      for (let i = 0; i < tickers.length; i += chunkSize) {
+        const chunk = tickers.slice(i, i + chunkSize);
+        const subscribeMsg = {
+          method: "SUBSCRIBE",
+          params: chunk,
+          id: Date.now() + i
+        };
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify(subscribeMsg));
+        }
+      }
     });
 
     ws.on('message', (data: RawData) => {
       try {
-        const payload = JSON.parse(data.toString()) as { stream: string, data: Binance24hTickerPayload };
-        // Clean payload from combined stream: { stream: '...', data: { ... } }
-        if (payload && payload.data) {
-          // 3. Emit internal event completely unblocked - no database hits, no heavy lifting
+        const payload = JSON.parse(data.toString());
+        // Handle both wrapped streams (if combined) and raw payloads (base /ws)
+        if (payload && payload.data && payload.data.e === '24hrTicker') {
           this.eventEmitter.emit('market.ticker', payload.data);
+        } else if (payload && payload.e === '24hrTicker') {
+          this.eventEmitter.emit('market.ticker', payload);
         }
       } catch (err: unknown) {
         // ignore parse errors to keep the stream unblocked

@@ -30,8 +30,12 @@ export class EngineService {
       const lastPrice = parseFloat(payload.c); // Last price
       const vwap = parseFloat(payload.w); // VWAP
 
+      // Fetch tier from Redis (default to MINOR if not found)
+      let tier = await this.redisClient.hget('system:asset_tiers', ticker) as 'MAJOR' | 'MINOR' | null;
+      if (tier !== 'MAJOR') tier = 'MINOR';
+
       // Fetch dynamic filters and baselines from Redis
-      const filters = await this.filterConfigService.getFilters();
+      const filters = await this.filterConfigService.getFilters(tier);
       const rawBaseline = await this.redisClient.hgetall(`baseline:${ticker}`);
       
       let rvol = 0;
@@ -45,6 +49,10 @@ export class EngineService {
         if (lastPrice > 0) atrPercent = (atr14d / lastPrice) * 100;
       }
 
+      // 🔬 TEMPORARY X-RAY LOG: Watch the math calculate in real-time
+      if (ticker === 'SOLUSDT') {
+        this.logger.debug(`[X-RAY SOLUSDT] Vol: $${(quoteVolume / 1000000).toFixed(2)}M | Change: ${priceChangePercent}% | RVOL: ${rvol.toFixed(2)}x | ATR: ${atrPercent.toFixed(2)}% | Price: $${lastPrice} | VWAP: $${vwap}`);
+      }
       // 1. Evaluate MVP Filter Logic
       const passed = this.evaluateStructuralFilters(quoteVolume, priceChangePercent, rvol, atrPercent, lastPrice, vwap, filters);
       if (!passed) {
@@ -67,9 +75,10 @@ export class EngineService {
       }
 
       // 2. Cooldown Mechanism
-      // Atomic set: set key to '1' with an Expiration of 900 seconds, Only if Not eXists
+      // Atomic set: set key to '1' with an Expiration of cooldownSeconds, Only if Not eXists
       const cooldownKey = `cooldown:${ticker}`;
-      const result = await this.redisClient.set(cooldownKey, '1', 'EX', 900, 'NX');
+      const ttl = filters.cooldownSeconds || 900;
+      const result = await this.redisClient.set(cooldownKey, '1', 'EX', ttl, 'NX');
       
       if (result !== 'OK') {
         // Key already exists, drop alert (in cooldown)

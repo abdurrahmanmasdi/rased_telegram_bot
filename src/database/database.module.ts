@@ -4,6 +4,7 @@ import { User } from './entities/user.entity';
 import { Subscription } from './entities/subscription.entity';
 import { AlertLog } from './entities/alert-log.entity';
 import { AssetConfig } from './entities/asset-config.entity';
+import { FilterConfig } from './entities/filter-config.entity';
 import { AssetConfigService } from './asset-config.service';
 import { Redis } from 'ioredis';
 
@@ -16,10 +17,10 @@ import { Redis } from 'ioredis';
       username: process.env.DB_USER || 'postgres',
       password: process.env.DB_PASSWORD || 'postgres',
       database: process.env.DB_NAME || 'rased',
-      entities: [User, Subscription, AlertLog, AssetConfig],
+      entities: [User, Subscription, AlertLog, AssetConfig, FilterConfig],
       synchronize: process.env.NODE_ENV !== 'production',
     }),
-    TypeOrmModule.forFeature([User, Subscription, AlertLog, AssetConfig]),
+    TypeOrmModule.forFeature([User, Subscription, AlertLog, AssetConfig, FilterConfig]),
   ],
   providers: [
     AssetConfigService,

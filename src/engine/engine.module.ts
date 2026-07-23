@@ -3,10 +3,11 @@ import { BullModule } from '@nestjs/bullmq';
 import { EngineService } from './engine.service';
 import { FilterConfigService } from './filter-config.service';
 import { HistoricalDataService } from './historical-data.service';
-import { Redis } from 'ioredis';
+import { DatabaseModule } from '../database/database.module';
 
 @Module({
   imports: [
+    DatabaseModule,
     BullModule.registerQueue({
       name: 'telegram-alerts',
     }),
@@ -15,15 +16,6 @@ import { Redis } from 'ioredis';
     FilterConfigService,
     HistoricalDataService,
     EngineService,
-    {
-      provide: 'REDIS_CLIENT',
-      useFactory: () => {
-        return new Redis({
-          host: process.env.REDIS_HOST || 'localhost',
-          port: parseInt(process.env.REDIS_PORT || '6379', 10),
-        });
-      },
-    },
   ],
   exports: [FilterConfigService],
 })

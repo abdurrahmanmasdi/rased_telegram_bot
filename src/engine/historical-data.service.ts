@@ -30,12 +30,44 @@ export class HistoricalDataService implements OnApplicationBootstrap {
 
     for (const ticker of tickers) {
       try {
-        const url = `https://api.binance.com/api/v3/klines?symbol=${ticker}&interval=1d&limit=30`;
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-          this.logger.error(`Failed to fetch klines for ${ticker}: ${response.statusText}`);
-          continue;
+        let response: Response | null = null;
+        let fetchSuccess = false;
+        const maxRetries = 3;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          try {
+            const url = `https://api.binance.com/api/v3/klines?symbol=${ticker}&interval=1d&limit=30`;
+            response = await fetch(url);
+            
+            if (response.status === 400) {
+              this.logger.warn(`Ticker ${ticker} is not a valid pair on Binance. Skipping baseline update.`);
+              break; // Stop retrying immediately for 400
+            }
+
+            if (!response.ok) {
+              if (response.status >= 500) {
+                this.logger.warn(`Server error ${response.status} fetching klines for ${ticker}. Attempt ${attempt}/${maxRetries}.`);
+                if (attempt < maxRetries) {
+                  await new Promise(res => setTimeout(res, 1000));
+                  continue;
+                }
+              }
+              this.logger.error(`Failed to fetch klines for ${ticker}: ${response.statusText}`);
+              break; // Don't retry 4xx other than 400 (e.g. 403, 404, 429 might need specific handling, but general failure here)
+            }
+
+            fetchSuccess = true;
+            break; // Success, exit retry loop
+          } catch (error: unknown) {
+            this.logger.warn(`Network error fetching klines for ${ticker}: ${error instanceof Error ? error.message : String(error)}. Attempt ${attempt}/${maxRetries}.`);
+            if (attempt < maxRetries) {
+               await new Promise(res => setTimeout(res, 1000));
+            }
+          }
+        }
+
+        if (!fetchSuccess || !response) {
+          continue; // Safely skip this ticker
         }
 
         const klines = await response.json() as (string | number)[][];
